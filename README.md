@@ -21,7 +21,7 @@ pip install -r requirements.txt
 
 1. 터미널 또는 명령 프롬프트에서 프로그램 파일을 실행합니다.
    ```bash
-   python naver_to_tistory.py
+   python main.py
    ```
 2. 프로그램 창이 실행되면 **[1단계: 브라우저 열기 (수동 로그인)]** 버튼을 누릅니다.
 3. 열린 크롬 창에서 **티스토리 계정으로 로그인**을 완료합니다.
