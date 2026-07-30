@@ -164,18 +164,22 @@ class BlogMigratorApp:
             title = title_elem.get_text(strip=True)
             elements = []
             
-            components = soup.find_all('div', class_=re.compile(r'se-component\b'))
+            # 🚀 [핵심 수정] 정규식 대신 정확히 'se-component' 클래스를 가진 최상위 블록만 찾도록 변경하여 중복 추출 완벽 방지
+            components = soup.find_all('div', class_='se-component')
+            
             for comp in components:
                 classes = comp.get('class', [])
                 
-                # 1. 표(Table) 완벽 추출
-                if 'se-table' in classes or comp.find('table') is not None:
+                # 🚀 [핵심 수정] 내부 껍데기까지 찾는 조건(or comp.find)을 지우고, 진짜 표(se-table) 블록일 때만 실행
+                if 'se-table' in classes:
                     table_tag = comp.find('table')
                     if table_tag:
-                        table_tag['style'] = "border-collapse: collapse; width: 100%; text-align: center; margin: 20px 0;"
+                        # 캡처했을 때 예쁘게 보이도록 CSS 스타일 부여
+                        table_tag['style'] = "border-collapse: collapse; width: 100%; text-align: center; margin: 0; font-family: 'Malgun Gothic', sans-serif;"
                         for cell in table_tag.find_all(['th', 'td']):
-                            cell['style'] = "border: 1px solid #dddddd; padding: 10px; background-color: #ffffff;"
-                        elements.append({'type': 'html', 'content': str(table_tag)})
+                            cell['style'] = "border: 1px solid #dddddd; padding: 12px; background-color: #ffffff; color: #333;"
+                        
+                        elements.append({'type': 'table', 'content': str(table_tag)})
                         
                 # 2. 인용구 및 체크리스트(se-quote) 추출
                 elif 'se-quote' in classes:
@@ -269,6 +273,45 @@ class BlogMigratorApp:
         
         temp_dir = os.path.join(os.getcwd(), "naver_temp_images")
         os.makedirs(temp_dir, exist_ok=True)
+
+        # 🚀 [추가됨] 티스토리 이동 전, 표(table)를 셀레니움으로 열어 이미지로 캡처합니다.
+        for idx, el in enumerate(elements):
+            if el['type'] == 'table':
+                html_path = os.path.join(temp_dir, f"temp_table_{naver_no}_{idx}.html")
+                img_path = os.path.join(temp_dir, f"table_img_{naver_no}_{idx}.png")
+                
+                # HTML 뼈대 생성 (한글 깨짐 방지 및 여백 확보)
+                html_content = f"""
+                <!DOCTYPE html>
+                <html><head><meta charset="utf-8">
+                <style>body {{ padding: 20px; background-color: white; display: inline-block; }}</style>
+                </head><body>{el['content']}</body></html>
+                """
+                with open(html_path, "w", encoding="utf-8") as f:
+                    f.write(html_content)
+                
+                # 로컬 HTML 파일을 현재 열려있는 셀레니움 브라우저로 엽니다.
+                file_url = "file:///" + os.path.abspath(html_path).replace("\\", "/")
+                self.driver.get(file_url)
+                time.sleep(0.5) # 렌더링 대기
+                
+                try:
+                    # 표 요소만 찾아서 스크린샷 촬영
+                    table_elem = self.driver.find_element(By.TAG_NAME, "table")
+                    table_elem.screenshot(img_path) 
+                    
+                    # 캡처에 성공했으므로, 이 요소를 로컬 이미지 타입으로 변경합니다.
+                    el['type'] = 'local_image'
+                    el['path'] = img_path
+                except Exception as e:
+                    self.log(f"⚠️ 표 캡처 실패: {e}")
+                    el['type'] = 'text'
+                    el['content'] = "[표 캡처 실패]"
+                
+                # 임시 생성한 HTML 파일은 지워줍니다.
+                try: os.remove(html_path) 
+                except: pass
+        # -------------------------------------------------------------------
         
         try:
             self.driver.get(f"https://{tistory_name}.tistory.com/manage/post")
@@ -291,7 +334,6 @@ class BlogMigratorApp:
             active_element = self.driver.switch_to.active_element
             paste_key = Keys.COMMAND if sys.platform == "darwin" else Keys.CONTROL
             
-            # 🚀 [추가] 커서를 항상 에디터의 맨 아래로 강제 고정하는 마법의 자바스크립트
             cursor_to_end_js = """
             var el = document.querySelector('[contenteditable="true"]');
             if(el) {
@@ -299,7 +341,7 @@ class BlogMigratorApp:
                 var range = document.createRange();
                 var sel = window.getSelection();
                 range.selectNodeContents(el);
-                range.collapse(false); // 커서를 맨 끝으로
+                range.collapse(false);
                 sel.removeAllRanges();
                 sel.addRange(range);
             }
@@ -307,7 +349,6 @@ class BlogMigratorApp:
 
             img_count = 1
             for el in elements:
-                # 🚀 매 작업 직전 커서를 문서 맨 아래로 초기화하여 순서 꼬임 완벽 방지
                 self.driver.execute_script(cursor_to_end_js)
                 time.sleep(0.2)
                 
@@ -319,7 +360,7 @@ class BlogMigratorApp:
                     active_element.send_keys(Keys.ENTER)
                     time.sleep(0.2)
                     
-                # 표 및 인용구(양식) 삽입
+                # 🚀 [수정됨] 인용구(양식) 삽입 (표는 빠졌으므로 인용구만 남음)
                 elif el['type'] == 'html':
                     safe_html = el['content'] + "<p><br></p>"
                     self.driver.execute_script("document.execCommand('insertHTML', false, arguments[0]);", safe_html)
@@ -328,6 +369,57 @@ class BlogMigratorApp:
                     active_element.send_keys(Keys.ENTER)
                     time.sleep(0.2)
                     
+                # 🚀 [수정됨] 캡처된 표 이미지 삽입 및 정확한 커서 탈출 처리
+                elif el['type'] == 'local_image':
+                    if self.send_image_to_clipboard(el['path']):
+                        active_element.send_keys(paste_key, 'v')
+                        time.sleep(4.0) # 이미지 업로드 완료 대기 시간 넉넉히 확보
+                        
+                        # 🚀 [핵심 수정] 문서 맨 끝이 아니라, '방금 업로드된 표 이미지 바로 다음'에 빈 단락을 만들고 커서를 위치시킵니다.
+                        reset_font_js = """
+                        var editor = document.querySelector('[contenteditable="true"]');
+                        if (editor) {
+                            var imgs = editor.querySelectorAll('img');
+                            if (imgs.length > 0) {
+                                var lastImg = imgs[imgs.length - 1];
+                                // 이미지 감싸는 태그(figure 등)를 찾아 그 바로 뒤에 빈 단락 생성
+                                var targetNode = lastImg.closest('figure') || lastImg.parentElement;
+                                
+                                var p = document.createElement('p');
+                                p.innerHTML = '<br>';
+                                
+                                targetNode.after(p);
+                                
+                                // 커서를 새로 만든 문단으로 이동
+                                var range = document.createRange();
+                                var sel = window.getSelection();
+                                range.selectNodeContents(p);
+                                range.collapse(true);
+                                sel.removeAllRanges();
+                                sel.addRange(range);
+                            }
+                        }
+                        """
+                        self.driver.execute_script(reset_font_js)
+                        time.sleep(0.3)
+                        
+                        # 표 캡처본 SEO Alt 텍스트 부여
+                        alt_text = f"{title} - 내용 정리 표 {img_count}"
+                        js_script = """
+                        var editor = document.querySelector('[contenteditable="true"]');
+                        if (editor) {
+                            var imgs = editor.querySelectorAll('img');
+                            if (imgs.length > 0) {
+                                var lastImg = imgs[imgs.length - 1];
+                                lastImg.setAttribute('alt', arguments[0]);
+                                lastImg.setAttribute('data-alt', arguments[0]);
+                            }
+                        }
+                        """
+                        self.driver.execute_script(js_script, alt_text)
+                        self.log(f"✅ 표 캡처 이미지 {img_count} 삽입 및 SEO Alt 입력 완료")
+                        img_count += 1
+                        
                 # 단일 이미지 삽입
                 elif el['type'] == 'image':
                     img_path = os.path.join(temp_dir, f"img_{naver_no}_{img_count}.jpg")
@@ -336,7 +428,6 @@ class BlogMigratorApp:
                             active_element.send_keys(paste_key, 'v')
                             time.sleep(3.5)
                             
-                            # 방향키(DOWN) 대신 확실한 JS로 커서 이동
                             self.driver.execute_script(cursor_to_end_js)
                             active_element.send_keys(Keys.ENTER)
                             time.sleep(0.3)
@@ -392,16 +483,13 @@ class BlogMigratorApp:
                                 self.log(f"✅ 나란히 사진 그룹 {img_count} 합성 및 SEO Alt 입력 완료")
                     img_count += 1
             
-            self.log("🎉 원본 크기 사진, 텍스트 분리, SEO Alt 태그까지 완벽하게 입력되었습니다!")
+            self.log("🎉 원본 크기 사진, 표 캡처, 텍스트 분리, SEO Alt 태그까지 완벽하게 입력되었습니다!")
 
-            # 1. 알람 소리 재생 (시스템 기본 알림음)
-            # 만약 뚜~ 하는 경고음을 원하시면 winsound.Beep(1000, 500) (1000Hz, 0.5초)를 사용하셔도 됩니다.
             winsound.MessageBeep(winsound.MB_OK)
             
-            # 2. 팝업창 띄우기 (UI 스레드에서 안전하게 실행되도록 root.after 사용)
             self.root.after(0, lambda: messagebox.showinfo(
                 "작업 완료", 
-                "🎉 원본 크기 사진, 텍스트 분리, SEO Alt 태그까지 완벽하게 입력되었습니다!"
+                "🎉 원본 크기 사진, 표 캡처, 텍스트 분리, SEO Alt 태그까지 완벽하게 입력되었습니다!"
             ))
             
         except Exception as e:
